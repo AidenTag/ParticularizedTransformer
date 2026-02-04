@@ -15,10 +15,13 @@ class ListOpsDataset(Dataset):
                 "<PAD>": 0,
                 "(": 1,
                 ")": 2,
-                "MIN": 3,
-                "MAX": 4,
-                "MED": 5,
-                "SUM_MOD": 6,  # Sometimes appearing as SM in some versions
+                "[": 3,
+                "]": 4, # Add brackets
+                "MIN": 5,
+                "MAX": 6,
+                "MED": 7,
+                "SUM_MOD": 8,
+                "SM": 8, # Alias
             }
             # Add digits 0-9
             for i in range(10):
@@ -65,9 +68,36 @@ class ListOpsDataset(Dataset):
                     continue
                 
                 # Tokenize
-                # ListOps is space separated usually
-                tokens = sequence.strip().split()
-                token_ids = [self.vocab.get(t, self.vocab.get("<PAD>")) for t in tokens]
+                # ListOps processing
+                # Tokens can be [MIN, [MAX, [SM, (, ), ], digits
+                raw_tokens = sequence.strip().split()
+                token_ids = []
+                for t in raw_tokens:
+                    # Clean token
+                    if t.startswith('[') and len(t) > 1:
+                        # e.g. [MIN -> MIN, [SM -> SM
+                        core = t[1:]
+                        if core == 'SM':
+                            t_id = self.vocab.get("SUM_MOD")
+                        else:
+                            t_id = self.vocab.get(core)
+                        
+                        # If t_id is None, maybe we should keep '['?
+                        # But for now assume [OP structure
+                        if t_id is None:
+                             # Fallback, maybe just [
+                             token_ids.append(self.vocab.get("["))
+                             # Then verify core?
+                             t_id = self.vocab.get(core)
+                    else:
+                        t_id = self.vocab.get(t)
+                    
+                    if t_id is None:
+                         # Use PAD or UNK? PAD is 0.
+                         t_id = 0 
+                    
+                    token_ids.append(t_id)
+
                 
                 # Truncate or Pad
                 if len(token_ids) > self.max_length:
@@ -96,8 +126,44 @@ class ListOpsDataModule(pl.LightningDataModule):
         self.vocab = None # Will be set after loading train
 
     def setup(self, stage=None):
-        # We assume standard LRA split filenames
+        # We assume standard LRA split filenames or the ones present in data/listops
         # LRA release folder structure usually has basic_train.tsv, basic_val.tsv, basic_test.tsv
+        # But here we observed train.tsv, val.tsv, test.tsv
+        
+        train_path = os.path.join(self.data_dir, "train.tsv")
+        val_path = os.path.join(self.data_dir, "val.tsv")
+        test_path = os.path.join(self.data_dir, "test.tsv")
+
+        # Fallback for standard LRA names if simple names don't exist
+        if not os.path.exists(train_path):
+             train_path = os.path.join(self.data_dir, "basic_train.tsv")
+        if not os.path.exists(val_path):
+             val_path = os.path.join(self.data_dir, "basic_val.tsv")
+        if not os.path.exists(test_path):
+             test_path = os.path.join(self.data_dir, "basic_test.tsv")
+
+        if stage == 'fit' or stage is None:
+            self.train_dataset = ListOpsDataset(train_path, max_length=self.max_length)
+            self.vocab = self.train_dataset.vocab
+            self.val_dataset = ListOpsDataset(val_path, vocab=self.vocab, max_length=self.max_length)
+
+        if stage == 'test' or stage is None:
+            # Ensure vocab is loaded if we skipped fit
+            if self.vocab is None:
+                # Load train just to get vocab if needed, or define default
+                temp_ds = ListOpsDataset(train_path, max_length=self.max_length)
+                self.vocab = temp_ds.vocab
+            
+            self.test_dataset = ListOpsDataset(test_path, vocab=self.vocab, max_length=self.max_length)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
+    def test_dataloader(self):
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
         train_path = os.path.join(self.data_dir, "basic_train.tsv")
         val_path = os.path.join(self.data_dir, "basic_val.tsv")
         test_path = os.path.join(self.data_dir, "basic_test.tsv")
