@@ -2,6 +2,7 @@ import argparse
 import os
 import torch
 import pytorch_lightning as pl
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from src.model import ListOpsTransformer, GPTConfig
 from src.dataset import ListOpsDataModule
@@ -9,8 +10,11 @@ from src.dataset import ListOpsDataModule
 def main():
     parser = argparse.ArgumentParser(description="Train DALex Transformer on ListOps")
     
+    # Experiment args
+    parser.add_argument('--exp_name', type=str, default=None, help='Experiment name for logging')
+    
     # Data args
-    parser.add_argument('--data_dir', type=str, default='data/lra_release/listops-1000', help='Path to ListOps data directory')
+    parser.add_argument('--data_dir', type=str, default='data/listops', help='Path to ListOps data directory')
     parser.add_argument('--max_length', type=int, default=2048, help='Maximum sequence length')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of dataloader workers')
@@ -48,15 +52,24 @@ def main():
         max_length=args.max_length,
         num_workers=args.num_workers
     )
-    # We need to setup dm to access vocab size, but typically we want to defer
-    # For now, let's just instantiate validation to peek at vocab size or assume fixed
-    # dm.setup() # This might fail if files don't exist
-    # If using fixed vocab in dataset.py, size is fixed.
-    vocab_size = 15 # 0-9 + PAD + 4 ops + parens -> roughly 16.
-    # From dataset.py: PAD, (, ), MIN, MAX, MED, SUM_MOD, 0-9.
-    # Total = 1 + 2 + 4 + 10 = 17.
-    vocab_size = 20 # Safe margin
     
+    # Setup data module to get vocabulary
+    dm.setup(stage='fit')
+    
+    # Dynamic vocab size
+    if dm.vocab:
+        vocab_size = len(dm.vocab)
+        print(f"Vocab size determined from dataset: {vocab_size}")
+    else:
+        # Fallback
+        vocab_size = 20
+        print(f"Using fallback vocab size: {vocab_size}")
+    
+    # Dalex Logic Override
+    if args.disable_dalex:
+        print("DALex Disabled: Forcing pressure to 0.0 (Standard Attention Equivalent)")
+        args.dalex_pressure = 0.0
+
     # 2. Setup Model
     config = GPTConfig(
         vocab_size=vocab_size, 
@@ -90,14 +103,31 @@ def main():
         accelerator = "cpu"
         devices = 1
 
+    # Logger setup
+    if args.exp_name:
+        logger = TensorBoardLogger("lightning_logs", name="listops", version=args.exp_name)
+    else:
+        logger = True # Default behavior (version_0, version_1...)
+
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator=accelerator,
         devices=devices,
         callbacks=[checkpoint_callback, LearningRateMonitor(logging_interval='step')],
         gradient_clip_val=1.0,
+        logger=logger
     )
-    
+
+    # 4. Train
+    print("Starting training...")
+    trainer.fit(model, dm)
+
+    # 5. Test
+    print("Starting testing...")
+    trainer.test(model, dm, ckpt_path="best")
+
+if __name__ == "__main__":
+    main()
     # 4. Train
     print(f"Starting training with DALex={config.use_dalex} (Pressure={config.dalex_pressure if config.use_dalex else 'N/A'})...")
     trainer.fit(model, dm)
