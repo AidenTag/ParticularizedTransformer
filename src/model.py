@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import pytorch_lightning as pl
-from .dalex_attention import DALexCausalAttention
+from .dalex_attention import DALexAttention
 
 class GPTConfig:
-    def __init__(self, vocab_size, block_size, n_layer=4, n_head=8, n_embd=128, dropout=0.1, bias=False, dalex_pressure=0.5, use_dalex=True):
+    def __init__(self, vocab_size, block_size, n_layer=4, n_head=8, n_embd=128, dropout=0.1, bias=False, dalex_pressure=0.5, use_dalex=True, is_causal=True, use_pos_emb=True):
         self.vocab_size = vocab_size
         self.block_size = block_size
         self.n_layer = n_layer
@@ -15,6 +15,8 @@ class GPTConfig:
         self.bias = bias
         self.dalex_pressure = dalex_pressure
         self.use_dalex = use_dalex
+        self.is_causal = is_causal
+        self.use_pos_emb = use_pos_emb
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support bias=False """
@@ -45,30 +47,7 @@ class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        if config.use_dalex:
-            self.attn = DALexCausalAttention(config)
-        else:
-            # Fallback to a standard causal usage (using the same class with pressure=0 usually works if implemented that way, 
-            # but better to interpret use_dalex=False as standard attention)
-            # We can use DALexCausalAttention with training behavior disabled or just standard implementation.
-            # For strict benchmarking, let's assume we want the exact same code just without the noise injection.
-            # In my DALexCausalAttention, if self.training is False, it skips noise.
-            # But we want to train a baseline. So let's reuse the class but force pressure to 0 or skip the injection block.
-            # However, looking at the code, DALexCausalAttention only checks self.training. 
-            # Ideally, we should have a 'Standard' mode.
-            # Let's assume for now we use the same class but with a flag or we implement a StandardAttention.
-            # For simplicity in this file, I'll instantiate DALexCausalAttention and relying on config.use_dalex 
-            # being handled inside DALexCausalAttention or wrapping it.
-            # The prompt implies DALexCausalAttention is the module to test. 
-            # Standard Transformer validation likely needs a standard MultiheadAttention.
-            # I will assume DALexCausalAttention is capable of being standard if pressure is effectively handled
-            # or I should add a Standard one. 
-            # Let's use DALexCausalAttention for both but set 'dalex_pressure' to 0 if standard?
-            # No, standard attention is mean-based (dot product). DALex is also dot product but weighted Q/K.
-            # If weights are all 1s (pressure=0 -> exp(0)=1), it is standard attention.
-            # So setting dalex_pressure = 0 makes it standard attention.
-            self.attn = DALexCausalAttention(config)
-
+        self.attn = DALexAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
@@ -114,22 +93,22 @@ class ListOpsTransformer(pl.LightningModule):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        if self.config.use_pos_emb:
+            pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = tok_emb + pos_emb
+        else:
+            x = tok_emb
+            
+        x = self.transformer.drop(x)
         for block in self.transformer.h:
             x = block(x)
-        x = self.transformer.ln_f(x)
+        x = self.transformer.ln_f(x) # shape (b, t, n_embd)
 
-        # We need to pool the sequence for classification.
-        # Common strategies:
-        # 1. Use the [CLS] token (if we had one)
-        # 2. Use the last token
-        # 3. Mean pool
-        # For causal models, the last token has attended to everything.
+        # We're building a causal model, so we pool by just grabbing the final token's representation (which should have seen the whole context, i.e. attended to everything)
         logits = self.head(x[:, -1, :]) # (b, 10)
 
         loss = None

@@ -119,18 +119,12 @@ def main():
     )
 
     # 4. Train
-    print("Starting training...")
+    print(f"Starting training with DALex={config.use_dalex} (Pressure={config.dalex_pressure if config.use_dalex else 'N/A'})...")
     trainer.fit(model, dm)
 
     # 5. Test
     print("Starting testing...")
     trainer.test(model, dm, ckpt_path="best")
-
-if __name__ == "__main__":
-    main()
-    # 4. Train
-    print(f"Starting training with DALex={config.use_dalex} (Pressure={config.dalex_pressure if config.use_dalex else 'N/A'})...")
-    trainer.fit(model, dm)
 
 if __name__ == "__main__":
     main()
