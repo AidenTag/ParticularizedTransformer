@@ -28,7 +28,7 @@ def main():
     
     # DALex args
     parser.add_argument('--dalex_pressure', type=float, default=0.5, help='DALex particularity pressure')
-    parser.add_argument('--disable_dalex', action='store_true', help='Disable DALex (use Standard Attention equivalent)')
+    parser.add_argument('--use_dalex', type=str, choices=['none', 'features', 'tokens', 'both'], default='none', help='Which DALex mechanism to use')
     
     # Training args
     parser.add_argument('--max_epochs', type=int, default=50, help='Maximum epochs')
@@ -66,7 +66,10 @@ def main():
         print(f"Using fallback vocab size: {vocab_size}")
     
     # Dalex Logic Override
-    if args.disable_dalex:
+    dalex_features = args.use_dalex in ['features', 'both']
+    dalex_tokens = args.use_dalex in ['tokens', 'both']
+
+    if not dalex_features and not dalex_tokens:
         print("DALex Disabled: Forcing pressure to 0.0 (Standard Attention Equivalent)")
         args.dalex_pressure = 0.0
 
@@ -79,7 +82,8 @@ def main():
         n_embd=args.n_embd,
         dropout=args.dropout,
         dalex_pressure=args.dalex_pressure,
-        use_dalex=not args.disable_dalex
+        dalex_features=dalex_features,
+        dalex_tokens=dalex_tokens
     )
     
     model = ListOpsTransformer(config, learning_rate=args.lr)
@@ -119,7 +123,7 @@ def main():
     )
 
     # 4. Train
-    print(f"Starting training with DALex={config.use_dalex} (Pressure={config.dalex_pressure if config.use_dalex else 'N/A'})...")
+    print(f"Starting training with DALex Features={config.dalex_features}, DALex Tokens={config.dalex_tokens} (Pressure={config.dalex_pressure})...")
     trainer.fit(model, dm)
 
     # 5. Test

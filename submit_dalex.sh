@@ -27,7 +27,6 @@ echo "Start Time: $(date)"
 mkdir -p slurm_logs
 
 # 2. Run Training
-# Running ListOps Mechanism Check (DALex Pressure 0.5)
 
 # Note: We use -m src.train to run as a module from the project root
 python -m src.train \

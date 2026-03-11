@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 from .dalex_attention import DALexAttention
 
 class GPTConfig:
-    def __init__(self, vocab_size, block_size, n_layer=4, n_head=8, n_embd=128, dropout=0.1, bias=False, dalex_pressure=0.5, use_dalex=True, is_causal=True, use_pos_emb=True):
+    def __init__(self, vocab_size, block_size, n_layer=4, n_head=8, n_embd=128, dropout=0.1, bias=False, dalex_pressure=0.5, dalex_features=True, dalex_tokens=False, is_causal=True, use_pos_emb=True):
         self.vocab_size = vocab_size
         self.block_size = block_size
         self.n_layer = n_layer
@@ -14,7 +14,8 @@ class GPTConfig:
         self.dropout = dropout
         self.bias = bias
         self.dalex_pressure = dalex_pressure
-        self.use_dalex = use_dalex
+        self.dalex_features = dalex_features
+        self.dalex_tokens = dalex_tokens
         self.is_causal = is_causal
         self.use_pos_emb = use_pos_emb
 
@@ -130,6 +131,15 @@ class ListOpsTransformer(pl.LightningModule):
         acc = (preds == targets).float().mean()
         self.log('val_loss', loss, prog_bar=True)
         self.log('val_acc', acc, prog_bar=True)
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        idx, targets = batch
+        logits, loss = self(idx, targets)
+        preds = torch.argmax(logits, dim=1)
+        acc = (preds == targets).float().mean()
+        self.log('test_loss', loss, prog_bar=True)
+        self.log('test_acc', acc, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
