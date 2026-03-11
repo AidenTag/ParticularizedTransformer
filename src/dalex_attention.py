@@ -7,7 +7,7 @@ class DALexAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+        # key, query, value projections for all heads
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
@@ -19,7 +19,8 @@ class DALexAttention(nn.Module):
         self.dropout = config.dropout
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         self.is_causal = getattr(config, 'is_causal', True)
-        self.use_dalex = getattr(config, 'use_dalex', True)
+        self.dalex_features = getattr(config, 'dalex_features', True)
+        self.dalex_tokens = getattr(config, 'dalex_tokens', False)
         
         # DALex specific parameter
         self.pressure = getattr(config, 'dalex_pressure', 0.5)
@@ -52,7 +53,7 @@ class DALexAttention(nn.Module):
         q = q.view(B, T, self.n_head, hs).transpose(1, 2)
         v = v.view(B, T, self.n_head, hs).transpose(1, 2)
 
-        if self.training and self.use_dalex: # Inject Particularity Pressure
+        if self.training and self.dalex_features: # Inject Particularity Pressure
             # Random DALex weight vector scales the FEATURE dimension of Q and K (-1, size = hs)
             # in order to "select" which features are important for this particular head in computing attention similarity
             
@@ -70,10 +71,18 @@ class DALexAttention(nn.Module):
         # self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=self.is_causal)
+            scale = (1.0 / math.sqrt(k.size(-1))) * (1.0 + self.pressure) if self.dalex_tokens else None # DOES IT NEED the 1/sqrt term? 
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask=None, 
+                dropout_p=self.dropout if self.training else 0, 
+                is_causal=self.is_causal,
+                scale=scale
+            )
         else:
             # manual implementation
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            scale = (1.0 / math.sqrt(k.size(-1))) * (1.0 + self.pressure) if self.dalex_tokens else (1.0 / math.sqrt(k.size(-1)))
+            att = (q @ k.transpose(-2, -1)) * scale
             if self.is_causal:
                 att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
